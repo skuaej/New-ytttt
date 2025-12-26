@@ -1,90 +1,97 @@
-# Authored By Certified Coders © 2025
-# FastAPI YouTube Audio API
-# Cookies + Proxy + Telegram Friendly
 
+import subprocess
 import random
-import asyncio
 from fastapi import FastAPI, Query, HTTPException
-import yt_dlp
 
-app = FastAPI(title="YT Audio API", version="1.0")
+app = FastAPI(
+    title="YouTube Audio API",
+    description="Works with or without proxy + cookies",
+    version="1.0"
+)
 
-COOKIE_FILE = "cookies.txt"
+COOKIES_FILE = "cookies.txt"
 PROXY_FILE = "proxies.txt"
 
 
-# -------------------------------
-# Load random proxy
-# -------------------------------
-def get_proxy():
+# -----------------------------
+# Load proxies from file
+# -----------------------------
+def load_proxies():
     try:
         with open(PROXY_FILE, "r") as f:
-            proxies = [p.strip() for p in f if p.strip()]
-        return random.choice(proxies) if proxies else None
-    except Exception:
-        return None
+            return [p.strip() for p in f if p.strip()]
+    except:
+        return []
 
 
-# -------------------------------
-# yt-dlp extractor
-# -------------------------------
-async def extract_audio(url: str):
-    proxy = get_proxy()
+# -----------------------------
+# Run yt-dlp
+# -----------------------------
+def run_yt_dlp(url: str, proxy: str | None = None):
+    cmd = [
+        "yt-dlp",
+        "--cookies", COOKIES_FILE,
+        "--remote-components", "ejs:github",
+        "-f", "bestaudio",
+        "-g",
+        url
+    ]
 
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "format": "bestaudio/best",
-        "cookiefile": COOKIE_FILE,
-        "proxy": proxy,
-        "nocheckcertificate": True,
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android"],
-                "skip": ["dash", "hls"]
-            }
-        },
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Linux; Android 13; Mobile) "
-                "AppleWebKit/537.36 Chrome/120 Safari/537.36"
-            )
-        }
-    }
+    if proxy:
+        cmd.insert(1, "--proxy")
+        cmd.insert(2, proxy)
+        cmd.insert(1, "--force-ipv4")
 
-    loop = asyncio.get_event_loop()
-
-    def _run():
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            return info["url"]
-
-    return await loop.run_in_executor(None, _run)
-
-
-# -------------------------------
-# Health check
-# -------------------------------
-@app.get("/")
-async def root():
-    return {"status": "ok", "message": "YT Audio API running"}
-
-
-# -------------------------------
-# Audio endpoint
-# -------------------------------
-@app.get("/audio")
-async def audio(
-    url: str = Query(..., description="YouTube video URL")
-):
     try:
-        audio_url = await extract_audio(url)
+        output = subprocess.check_output(
+            cmd,
+            stderr=subprocess.STDOUT,
+            timeout=25
+        ).decode().strip()
+        return output
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(e.output.decode())
+    except Exception as e:
+        raise RuntimeError(str(e))
+
+
+# -----------------------------
+# API Endpoint
+# -----------------------------
+@app.get("/audio")
+def get_audio(url: str = Query(..., description="YouTube video URL")):
+
+    # 1️⃣ TRY WITHOUT PROXY
+    try:
+        audio_url = run_yt_dlp(url)
         return {
-            "status": "success",
+            "success": True,
+            "mode": "no_proxy",
             "audio_url": audio_url
         }
-    except Exception as e:
+    except Exception as no_proxy_err:
+        pass
+
+    # 2️⃣ TRY WITH PROXY
+    proxies = load_proxies()
+    if not proxies:
         raise HTTPException(
             status_code=500,
-            detail=str(e)
-)
+            detail="Blocked without proxy & no proxy available"
+        )
+
+    proxy = random.choice(proxies)
+
+    try:
+        audio_url = run_yt_dlp(url, proxy)
+        return {
+            "success": True,
+            "mode": "proxy",
+            "proxy_used": proxy,
+            "audio_url": audio_url
+        }
+    except Exception as proxy_err:
+        raise HTTPException(
+            status_code=500,
+            detail=str(proxy_err)
+        )
