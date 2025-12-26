@@ -1,58 +1,87 @@
-# yt_api.py
-# YouTube Audio API with COOKIE + PROXY
-# For Telegram Music Bots
+
+# ================================
+#  YouTube Audio API
+#  Proxy + Cookies Supported
+# ================================
 
 import os
+import random
 import yt_dlp
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 
-app = FastAPI(title="YT Audio API (Cookie + Proxy)")
+# ---------------- CONFIG ----------------
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-COOKIE_FILE = os.path.join(BASE_DIR, "cookies.txt")
+PROXY_FILE = "proxies.txt"
+COOKIE_FILE = "cookies.txt"
 
-YT_PROXY = os.getenv("YT_PROXY")  # optional
+# ---------------------------------------
 
+app = FastAPI(title="YT Audio API")
 
-def extract_audio(video_id: str):
-    url = f"https://www.youtube.com/watch?v={video_id}"
+# ---------- PROXY HANDLER ---------------
 
-    ydl_opts = {
+def load_proxies():
+    if not os.path.exists(PROXY_FILE):
+        return []
+    with open(PROXY_FILE, "r") as f:
+        return [p.strip() for p in f if p.strip()]
+
+PROXIES = load_proxies()
+
+def get_proxy():
+    if not PROXIES:
+        return None
+    return random.choice(PROXIES)
+
+# ---------- YTDLP OPTIONS ---------------
+
+def ydl_opts():
+    proxy = get_proxy()
+
+    opts = {
         "quiet": True,
         "no_warnings": True,
         "format": "bestaudio/best",
-        "skip_download": True,
         "noplaylist": True,
+        "geo_bypass": True,
+        "nocheckcertificate": True,
     }
 
-    # 🍪 COOKIE SUPPORT
+    # Add proxy
+    if proxy:
+        opts["proxy"] = proxy
+
+    # Add cookies
     if os.path.exists(COOKIE_FILE):
-        ydl_opts["cookiefile"] = COOKIE_FILE
+        opts["cookiefile"] = COOKIE_FILE
 
-    # 🌍 PROXY SUPPORT
-    if YT_PROXY:
-        ydl_opts["proxy"] = YT_PROXY
+    return opts
 
+# ---------- API ROUTE -------------------
+
+@app.get("/")
+def home():
+    return {"status": "running"}
+
+@app.get("/audio")
+def get_audio(url: str):
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        opts = ydl_opts()
+
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
             audio_url = info.get("url")
             if not audio_url:
-                raise Exception("Audio URL not found")
+                raise Exception("Audio stream not found")
 
             return {
+                "status": "ok",
                 "title": info.get("title"),
                 "duration": info.get("duration"),
                 "audio_url": audio_url,
+                "proxy_used": opts.get("proxy", "none"),
             }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/audio")
-def audio(
-    vidid: str = Query(..., description="YouTube video ID")
-):
-    return extract_audio(vidid)
