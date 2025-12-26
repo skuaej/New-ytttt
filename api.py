@@ -1,87 +1,90 @@
+# Authored By Certified Coders © 2025
+# FastAPI YouTube Audio API
+# Cookies + Proxy + Telegram Friendly
 
-# ================================
-#  YouTube Audio API
-#  Proxy + Cookies Supported
-# ================================
-
-import os
 import random
+import asyncio
+from fastapi import FastAPI, Query, HTTPException
 import yt_dlp
-from fastapi import FastAPI, HTTPException
 
-# ---------------- CONFIG ----------------
+app = FastAPI(title="YT Audio API", version="1.0")
 
-PROXY_FILE = "proxies.txt"
 COOKIE_FILE = "cookies.txt"
+PROXY_FILE = "proxies.txt"
 
-# ---------------------------------------
 
-app = FastAPI(title="YT Audio API")
-
-# ---------- PROXY HANDLER ---------------
-
-def load_proxies():
-    if not os.path.exists(PROXY_FILE):
-        return []
-    with open(PROXY_FILE, "r") as f:
-        return [p.strip() for p in f if p.strip()]
-
-PROXIES = load_proxies()
-
+# -------------------------------
+# Load random proxy
+# -------------------------------
 def get_proxy():
-    if not PROXIES:
+    try:
+        with open(PROXY_FILE, "r") as f:
+            proxies = [p.strip() for p in f if p.strip()]
+        return random.choice(proxies) if proxies else None
+    except Exception:
         return None
-    return random.choice(PROXIES)
 
-# ---------- YTDLP OPTIONS ---------------
 
-def ydl_opts():
+# -------------------------------
+# yt-dlp extractor
+# -------------------------------
+async def extract_audio(url: str):
     proxy = get_proxy()
 
-    opts = {
+    ydl_opts = {
         "quiet": True,
         "no_warnings": True,
         "format": "bestaudio/best",
-        "noplaylist": True,
-        "geo_bypass": True,
+        "cookiefile": COOKIE_FILE,
+        "proxy": proxy,
         "nocheckcertificate": True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android"],
+                "skip": ["dash", "hls"]
+            }
+        },
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Linux; Android 13; Mobile) "
+                "AppleWebKit/537.36 Chrome/120 Safari/537.36"
+            )
+        }
     }
 
-    # Add proxy
-    if proxy:
-        opts["proxy"] = proxy
+    loop = asyncio.get_event_loop()
 
-    # Add cookies
-    if os.path.exists(COOKIE_FILE):
-        opts["cookiefile"] = COOKIE_FILE
-
-    return opts
-
-# ---------- API ROUTE -------------------
-
-@app.get("/")
-def home():
-    return {"status": "running"}
-
-@app.get("/audio")
-def get_audio(url: str):
-    try:
-        opts = ydl_opts()
-
-        with yt_dlp.YoutubeDL(opts) as ydl:
+    def _run():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
+            return info["url"]
 
-            audio_url = info.get("url")
-            if not audio_url:
-                raise Exception("Audio stream not found")
+    return await loop.run_in_executor(None, _run)
 
-            return {
-                "status": "ok",
-                "title": info.get("title"),
-                "duration": info.get("duration"),
-                "audio_url": audio_url,
-                "proxy_used": opts.get("proxy", "none"),
-            }
 
+# -------------------------------
+# Health check
+# -------------------------------
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "YT Audio API running"}
+
+
+# -------------------------------
+# Audio endpoint
+# -------------------------------
+@app.get("/audio")
+async def audio(
+    url: str = Query(..., description="YouTube video URL")
+):
+    try:
+        audio_url = await extract_audio(url)
+        return {
+            "status": "success",
+            "audio_url": audio_url
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+)
