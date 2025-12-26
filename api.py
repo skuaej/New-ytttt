@@ -1,48 +1,36 @@
-# api.py
-import random
 import subprocess
-from pathlib import Path
+import random
+import requests
+from fastapi import FastAPI, Query, Response
 
-from fastapi import FastAPI, Query, HTTPException
+app = FastAPI()
 
-# ================= CONFIG =================
-
-COOKIE_FILE = Path("cookies.txt")
-PROXY_FILE = Path("proxy.txt")
-
-# ==========================================
-
-app = FastAPI(title="YouTube Audio API", version="1.0")
+COOKIES = "cookies.txt"
+PROXY_FILE = "proxy.txt"
 
 
-# ---------- Proxy Handler ----------
 def get_proxy():
-    if not PROXY_FILE.exists():
+    try:
+        with open(PROXY_FILE) as f:
+            proxies = [p.strip() for p in f if p.strip()]
+        return random.choice(proxies) if proxies else None
+    except:
         return None
 
-    proxies = [
-        p.strip()
-        for p in PROXY_FILE.read_text().splitlines()
-        if p.strip()
-    ]
-    return random.choice(proxies) if proxies else None
 
-
-# ---------- Core yt-dlp Logic ----------
-def extract_audio_url(youtube_url: str) -> str:
-    if not COOKIE_FILE.exists():
-        raise RuntimeError("cookies.txt not found")
+@app.get("/audio")
+def audio(url: str = Query(...)):
 
     proxy = get_proxy()
 
+    # EXACT yt-dlp command you gave
     cmd = [
         "yt-dlp",
-        "--cookies", str(COOKIE_FILE),
+        "--cookies", COOKIES,
         "--remote-components", "ejs:github",
-        "--extractor-args", "youtube:player_client=web",
+        "--force-ipv4",
         "-f", "bestaudio",
-        "-g",
-        youtube_url,
+        "-g", url
     ]
 
     if proxy:
@@ -50,42 +38,45 @@ def extract_audio_url(youtube_url: str) -> str:
         cmd.insert(2, proxy)
 
     try:
-        output = subprocess.check_output(
+        stream_url = subprocess.check_output(
             cmd,
             stderr=subprocess.STDOUT,
-            text=True,
-            timeout=60,
-        )
-        return output.strip()
-
+            text=True
+        ).strip()
     except subprocess.CalledProcessError as e:
-        raise RuntimeError(e.output)
-
-
-# ================= API ROUTES =================
-
-@app.get("/")
-def root():
-    return {
-        "status": "running",
-        "proxy_enabled": PROXY_FILE.exists(),
-        "cookies_loaded": COOKIE_FILE.exists(),
-    }
-
-
-@app.get("/audio")
-def get_audio(
-    url: str = Query(..., description="YouTube video URL"),
-):
-    try:
-        audio_url = extract_audio_url(url)
         return {
-            "status": "success",
-            "audio_url": audio_url,
+            "status": "error",
+            "proxy_used": proxy,
+            "detail": e.output
         }
 
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e),
-        )
+    # Browser ke liye headers
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://www.youtube.com/",
+        "Accept": "*/*",
+        "Range": "bytes=0-"
+    }
+
+    # requests SOCKS support automatically agar scheme socks4/socks5 ho
+    proxies = {
+        "http": proxy,
+        "https": proxy
+    } if proxy else None
+
+    r = requests.get(
+        stream_url,
+        headers=headers,
+        stream=True,
+        timeout=20,
+        proxies=proxies
+    )
+
+    return Response(
+        r.iter_content(chunk_size=1024 * 32),
+        media_type="audio/webm",
+        headers={
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "no-cache"
+        }
+    )
