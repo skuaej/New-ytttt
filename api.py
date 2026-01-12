@@ -178,7 +178,7 @@ def audio(request: Request, url: str = Query(...)):
 def mix():
     return {
         "type": "mix",
-        "count": 10,
+        "count": 3,
         "results": [
             {
                 "title": "Shakira – Waka Waka",
@@ -198,6 +198,5 @@ def mix():
                 "thumbnail": "https://i.ytimg.com/vi/kJQP7kiw5Fk/hqdefault.jpg",
                 "duration": "3:48"
             }
-            // 👉 aise hi 10 daal de
         ]
     }
