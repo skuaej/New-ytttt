@@ -3,24 +3,21 @@ from fastapi import FastAPI, Query
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="YT Music Ultra Fast API")
+app = FastAPI()
 
 YTDLP = "yt-dlp"
 COOKIES = "cookies.txt"
 CACHE_FILE = "cache.json"
 
-STREAM_TTL = 300  # 5 min
+STREAM_TTL = 300
 
-# ======================
-# LOAD / SAVE CACHE
-# ======================
+# ---------- LOAD CACHE ----------
 if os.path.exists(CACHE_FILE):
     with open(CACHE_FILE, "r") as f:
         VIDEO_CACHE = json.load(f)
 else:
     VIDEO_CACHE = {}
 
-# videoId -> (stream, ts)
 STREAM_CACHE = {}
 
 def save_cache():
@@ -34,17 +31,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ======================
-# SEARCH + PLAY (FAST)
-# ======================
+# ---------- ONLY ENDPOINT ----------
 @app.get("/search-audio")
 def search_audio(query: str = Query(...)):
     q = query.strip().lower()
 
-    # 1️⃣ VIDEO ID CACHE (DISK)
+    # 1) videoId cache
     video_id = VIDEO_CACHE.get(q)
 
-    # 2️⃣ IF NOT FOUND → EXTERNAL SEARCH (FAST)
+    # 2) external search (FAST)
     if not video_id:
         try:
             r = requests.get(
@@ -60,7 +55,7 @@ def search_audio(query: str = Query(...)):
         except Exception:
             video_id = None
 
-    # 3️⃣ FALLBACK → yt-dlp search (SLOW BUT SAFE)
+    # 3) fallback yt-dlp search
     if not video_id:
         cmd = [
             YTDLP,
@@ -76,13 +71,13 @@ def search_audio(query: str = Query(...)):
         VIDEO_CACHE[q] = video_id
         save_cache()
 
-    # 4️⃣ STREAM CACHE (RAM)
+    # 4) stream cache
     if video_id in STREAM_CACHE:
         stream, ts = STREAM_CACHE[video_id]
         if time.time() - ts < STREAM_TTL:
             return RedirectResponse(stream, status_code=302)
 
-    # 5️⃣ GENERATE STREAM (FAST)
+    # 5) generate stream
     cmd = [
         YTDLP,
         "--cookies", COOKIES,
