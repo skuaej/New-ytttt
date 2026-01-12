@@ -1,9 +1,10 @@
 import subprocess
+import requests
 from fastapi import FastAPI, Query
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="YT Audio Stream API")
+app = FastAPI(title="YT Music API")
 
 YTDLP = "yt-dlp"
 COOKIES = "cookies.txt"
@@ -15,16 +16,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def root():
-    return {"status": "running", "endpoint": "/audio"}
+# ======================
+# SEARCH (KEYWORD → URL)
+# ======================
+@app.get("/search")
+def search(q: str = Query(...)):
+    try:
+        r = requests.get(
+            "https://piped.video/api/search",
+            params={"q": q, "type": "video"},
+            timeout=5
+        )
+        data = r.json()
 
+        if not data.get("items"):
+            return JSONResponse({"error": "no_results"}, status_code=404)
+
+        item = data["items"][0]
+
+        return {
+            "title": item.get("title"),
+            "url": item.get("url")
+        }
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+# ======================
+# AUDIO (URL → STREAM)
+# ======================
 @app.get("/audio")
 def audio(url: str = Query(...)):
-    """
-    Accepts FULL YouTube URL only.
-    Returns redirect to audio stream.
-    """
     try:
         cmd = [
             YTDLP,
