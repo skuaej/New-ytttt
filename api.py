@@ -11,11 +11,13 @@ YTDLP = "yt-dlp"
 COOKIES = "cookies.txt"
 CACHE_FILE = "cache.json"
 
-# ---------- LOAD CACHE ----------
+# ================= CACHE LOAD =================
 if os.path.exists(CACHE_FILE):
     try:
         with open(CACHE_FILE, "r") as f:
             SEARCH_CACHE = json.load(f)
+        if not isinstance(SEARCH_CACHE, dict):
+            SEARCH_CACHE = {}
     except Exception:
         SEARCH_CACHE = {}
 else:
@@ -40,13 +42,13 @@ def root():
         "endpoints": ["/search?q=", "/audio?url="]
     }
 
-# ================= SEARCH (yt-dlp ONLY) =================
+# ================= SEARCH =================
 @app.get("/search")
 def search(q: str = Query(...)):
     key = q.strip().lower()
 
-    # 1️⃣ CACHE HIT
-    if key in SEARCH_CACHE:
+    # ---- SAFE CACHE HIT ----
+    if key in SEARCH_CACHE and isinstance(SEARCH_CACHE[key], list):
         return {
             "query": q,
             "cached": True,
@@ -54,20 +56,22 @@ def search(q: str = Query(...)):
         }
 
     try:
-        # yt-dlp search (ALWAYS WORKS)
         cmd = [
             YTDLP,
+            "--quiet",
+            "--no-warnings",
             "--skip-download",
+            "--socket-timeout", "10",
             "--print",
             "%(title)s||%(id)s||%(duration)s",
-            f"ytsearch10:{q}"
+            f"ytsearch3:{q}"
         ]
 
         p = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=15
+            timeout=25
         )
 
         lines = p.stdout.strip().split("\n")
@@ -78,6 +82,7 @@ def search(q: str = Query(...)):
                 continue
 
             title, vid, duration = line.split("||", 2)
+
             results.append({
                 "title": title,
                 "url": f"https://youtu.be/{vid}",
@@ -88,7 +93,7 @@ def search(q: str = Query(...)):
         if not results:
             return JSONResponse({"error": "no_results"}, status_code=404)
 
-        # SAVE CACHE
+        # ---- SAVE LIST ONLY ----
         SEARCH_CACHE[key] = results
         save_cache()
 
@@ -97,6 +102,12 @@ def search(q: str = Query(...)):
             "cached": False,
             "results": results
         }
+
+    except subprocess.TimeoutExpired:
+        return JSONResponse(
+            {"error": "search_timeout", "message": "YouTube slow, retry"},
+            status_code=504
+        )
 
     except Exception as e:
         return JSONResponse(
