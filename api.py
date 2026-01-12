@@ -1,5 +1,7 @@
 import subprocess
 import requests
+import json
+import os
 from fastapi import FastAPI, Query
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +10,21 @@ app = FastAPI(title="YT Music API")
 
 YTDLP = "yt-dlp"
 COOKIES = "cookies.txt"
+CACHE_FILE = "cache.json"
+
+# ---------- LOAD CACHE ----------
+if os.path.exists(CACHE_FILE):
+    try:
+        with open(CACHE_FILE, "r") as f:
+            SEARCH_CACHE = json.load(f)
+    except Exception:
+        SEARCH_CACHE = {}
+else:
+    SEARCH_CACHE = {}
+
+def save_cache():
+    with open(CACHE_FILE, "w") as f:
+        json.dump(SEARCH_CACHE, f, indent=2)
 
 app.add_middleware(
     CORSMiddleware,
@@ -16,11 +33,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ======================
-# SEARCH (KEYWORD → URL)
-# ======================
+# ================= SEARCH =================
 @app.get("/search")
 def search(q: str = Query(...)):
+    key = q.strip().lower()
+
+    # 1️⃣ Cache hit → instant
+    if key in SEARCH_CACHE:
+        return {
+            "query": q,
+            "cached": True,
+            "results": SEARCH_CACHE[key]
+        }
+
+    # 2️⃣ External search (Piped)
     try:
         r = requests.get(
             "https://piped.video/api/search",
@@ -28,23 +54,30 @@ def search(q: str = Query(...)):
             timeout=5
         )
         data = r.json()
+        items = data.get("items", [])
+    except Exception:
+        return JSONResponse({"error": "search_failed"}, status_code=500)
 
-        if not data.get("items"):
-            return JSONResponse({"error": "no_results"}, status_code=404)
+    results = []
+    for i in items[:10]:
+        results.append({
+            "title": i.get("title"),
+            "url": i.get("url"),
+            "duration": i.get("duration"),
+            "thumbnail": i.get("thumbnail")
+        })
 
-        item = data["items"][0]
+    # 3️⃣ Save to cache
+    SEARCH_CACHE[key] = results
+    save_cache()
 
-        return {
-            "title": item.get("title"),
-            "url": item.get("url")
-        }
+    return {
+        "query": q,
+        "cached": False,
+        "results": results
+    }
 
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-# ======================
-# AUDIO (URL → STREAM)
-# ======================
+# ================= AUDIO =================
 @app.get("/audio")
 def audio(url: str = Query(...)):
     try:
