@@ -1,8 +1,6 @@
 fastapi
 uvicorn
+requests
 yt-dlp
-anyio
-fastapi
-uvicorn
 psutil
-yt-dlp
+pycryptodomex
