@@ -174,11 +174,12 @@ def audio(request: Request, url: str = Query(...)):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 # ================= MIX (TOP 5 MOST VIEWED – FIXED) =================
+# ================= MIX (TOP 10 INDIVIDUAL SONGS ONLY) =================
 @app.get("/mix")
 def mix():
     now = time.time()
 
-    # 🔥 CACHE HIT
+    # 🔥 CACHE HIT (30 min)
     if MIX_CACHE["data"] and now - MIX_CACHE["ts"] < MIX_TTL:
         return MIX_CACHE["data"]
 
@@ -190,39 +191,75 @@ def mix():
             "--skip-download",
             "--socket-timeout", "10",
             "--dump-json",
-            "ytsearch10:music"
+            # 👇 keywords force individual songs
+            "ytsearch25:official music video song"
         ]
 
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        p = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
 
         results = []
+
         for line in p.stdout.strip().split("\n"):
             try:
                 data = json.loads(line)
             except:
                 continue
 
-            views = data.get("view_count")
-            if not views:
+            # ❌ Skip playlists
+            if data.get("_type") == "playlist":
+                continue
+
+            duration = data.get("duration")
+            views = data.get("view_count", 0)
+            title = (data.get("title") or "").lower()
+
+            # ❌ Skip invalid duration
+            if not duration:
+                continue
+
+            # ❌ Only 2–6 minutes
+            if duration < 120 or duration > 360:
+                continue
+
+            # ❌ Skip playlist-like titles
+            if any(x in title for x in [
+                "playlist", "mix", "collection",
+                "full album", "non stop", "hours"
+            ]):
+                continue
+
+            # ❌ Skip low-view junk
+            if views < 1_000_000:
                 continue
 
             results.append({
                 "title": data.get("title"),
                 "url": f"https://youtu.be/{data.get('id')}",
                 "thumbnail": data.get("thumbnail"),
-                "duration": format_duration(data.get("duration")),
+                "duration": format_duration(duration),
+                "duration_sec": duration,
                 "views": views
             })
 
         if not results:
             return JSONResponse({"error": "no_mix_results"}, status_code=404)
 
-        top5 = sorted(results, key=lambda x: x["views"], reverse=True)[:5]
+        # 🔥 SORT BY VIEWS → TOP 10
+        top10 = sorted(
+            results,
+            key=lambda x: x["views"],
+            reverse=True
+        )[:10]
 
         resp = {
             "type": "mix",
-            "count": len(top5),
-            "results": top5
+            "count": len(top10),
+            "results": top10
         }
 
         MIX_CACHE["data"] = resp
