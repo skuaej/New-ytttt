@@ -174,13 +174,12 @@ def audio(request: Request, url: str = Query(...)):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 # ================= MIX (TOP 5 MOST VIEWED – FIXED) =================
-#         # 🔥 SORT BY VIEWS → TOP 10
-# ================= MIX (TOP 10 INDIVIDUAL SONGS – FINAL BALANCED) =================
+# ================= MIX (TOP 10 INDIUAL SONGS – GUARANTEED) =================
 @app.get("/mix")
 def mix():
     now = time.time()
 
-    # 🔥 CACHE (30 min)
+    # 🔥 Cache hit (30 min)
     if MIX_CACHE["data"] and now - MIX_CACHE["ts"] < MIX_TTL:
         return MIX_CACHE["data"]
 
@@ -192,15 +191,15 @@ def mix():
             "--skip-download",
             "--socket-timeout", "10",
             "--dump-json",
-            # 👇 thoda broad search
-            "ytsearch40:official song music video"
+            # 👇 bada search pool
+            "ytsearch100:official music video song"
         ]
 
         p = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=45
         )
 
         results = []
@@ -211,7 +210,7 @@ def mix():
             except:
                 continue
 
-            # ❌ playlist skip
+            # ❌ skip playlists
             if data.get("_type") == "playlist":
                 continue
 
@@ -227,7 +226,7 @@ def mix():
             if duration < 120 or duration > 360:
                 continue
 
-            # ❌ playlist-like titles
+            # ❌ playlist-style titles
             if any(x in title for x in [
                 "playlist", "mix", "collection",
                 "full album", "non stop", "hours"
@@ -246,7 +245,7 @@ def mix():
         if not results:
             return JSONResponse({"error": "no_mix_results"}, status_code=404)
 
-        # 🔥 SORT BY VIEWS → TOP 10
+        # 🔥 sort by views → top 10
         top10 = sorted(
             results,
             key=lambda x: x["views"],
