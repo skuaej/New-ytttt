@@ -1,17 +1,20 @@
 import subprocess
 import json
 import os
+import requests
+
 from fastapi import FastAPI, Query
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="YT Music API")
 
+# ================= CONFIG =================
 YTDLP = "yt-dlp"
 COOKIES = "cookies.txt"
 CACHE_FILE = "cache.json"
 
-# ================= CACHE LOAD =================
+# ================= CACHE =================
 if os.path.exists(CACHE_FILE):
     try:
         with open(CACHE_FILE, "r") as f:
@@ -27,6 +30,7 @@ def save_cache():
     with open(CACHE_FILE, "w") as f:
         json.dump(SEARCH_CACHE, f, indent=2)
 
+# ================= CORS =================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -47,7 +51,7 @@ def root():
 def search(q: str = Query(...)):
     key = q.strip().lower()
 
-    # ---- SAFE CACHE HIT ----
+    # cache hit (safe)
     if key in SEARCH_CACHE and isinstance(SEARCH_CACHE[key], list):
         return {
             "query": q,
@@ -93,7 +97,6 @@ def search(q: str = Query(...)):
         if not results:
             return JSONResponse({"error": "no_results"}, status_code=404)
 
-        # ---- SAVE LIST ONLY ----
         SEARCH_CACHE[key] = results
         save_cache()
 
@@ -115,16 +118,17 @@ def search(q: str = Query(...)):
             status_code=500
         )
 
-# ================= AUDIO =================
+# ================= AUDIO (PROXY STREAM) =================
 @app.get("/audio")
 def audio(url: str = Query(...)):
     try:
+        # 1️⃣ Get direct audio stream URL (server-side)
         cmd = [
             YTDLP,
             "--cookies", COOKIES,
             "--force-ipv4",
-            "--add-header", "Referer:https://www.youtube.com/",
-            "--add-header", "User-Agent:Mozilla/5.0",
+            "--no-warnings",
+            "--quiet",
             "-f", "bestaudio[ext=m4a]/bestaudio/best",
             "-g",
             url
@@ -137,11 +141,22 @@ def audio(url: str = Query(...)):
             timeout=20
         )
 
-        stream = p.stdout.strip()
-        if not stream.startswith("http"):
+        stream_url = p.stdout.strip()
+        if not stream_url.startswith("http"):
             return JSONResponse({"error": "stream_failed"}, status_code=500)
 
-        return RedirectResponse(stream, status_code=302)
+        # 2️⃣ Proxy stream through server (NO REDIRECT)
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://www.youtube.com/"
+        }
+
+        r = requests.get(stream_url, headers=headers, stream=True, timeout=10)
+
+        return StreamingResponse(
+            r.iter_content(chunk_size=1024 * 64),
+            media_type="audio/mp4"
+        )
 
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
