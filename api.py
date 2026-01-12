@@ -1,12 +1,26 @@
 import os
 import time
 import psutil
-import asyncio
 import subprocess
 from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
+# ==========================
+# APP INIT
+# ==========================
 app = FastAPI(title="YT Stream API")
+
+# ==========================
+# CORS FIX (IMPORTANT)
+# ==========================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],          # allow all domains
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 START_TIME = time.time()
 
@@ -36,7 +50,7 @@ def load_level(cpu):
 
 
 # ==========================
-# HEALTH / PING
+# ROOT / HEALTH
 # ==========================
 @app.get("/")
 async def root():
