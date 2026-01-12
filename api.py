@@ -1,20 +1,20 @@
-import subprocess, json
-from fastapi import FastAPI, Query, Request, HTTPException
+import subprocess
+import json
+from fastapi import FastAPI, Query
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="YT Music API")
+app = FastAPI(title="YT Music Backend (Open)")
 
-# =====================
+# =========================
 # CONFIG
-# =====================
+# =========================
 YTDLP = "yt-dlp"
-COOKIES = "cookies.txt"
-API_KEY = "mysecret123"   # optional (can remove if you want)
+COOKIES = "cookies.txt"   # must exist
 
-# =====================
+# =========================
 # CORS
-# =====================
+# =========================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,28 +22,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =====================
-# UTILS
-# =====================
-def check_key(key: str):
-    if API_KEY and key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
-# =====================
+# =========================
 # HEALTH
-# =====================
+# =========================
 @app.get("/")
 def root():
-    return {"status": "running"}
+    return {
+        "status": "running",
+        "endpoints": [
+            "/search-meta",
+            "/search-audio"
+        ]
+    }
 
-# =====================
-# SEARCH META (title + thumbnail)
-# =====================
+# =========================
+# SEARCH META
+# title + thumbnail + duration
+# =========================
 @app.get("/search-meta")
-def search_meta(query: str, key: str = Query(None)):
-    if API_KEY:
-        check_key(key)
-
+def search_meta(query: str = Query(...)):
     try:
         cmd = [
             YTDLP,
@@ -68,7 +65,10 @@ def search_meta(query: str, key: str = Query(None)):
                 "duration": d.get("duration")
             })
 
-        return {"status": "success", "results": results}
+        return {
+            "status": "success",
+            "results": results
+        }
 
     except Exception as e:
         return JSONResponse(
@@ -76,14 +76,12 @@ def search_meta(query: str, key: str = Query(None)):
             status_code=500
         )
 
-# =====================
-# SEARCH + PLAY (REDIRECT MODE)
-# =====================
+# =========================
+# SEARCH + AUTO PLAY
+# REDIRECT MODE (NO 403)
+# =========================
 @app.get("/search-audio")
-def search_audio(query: str, key: str = Query(None)):
-    if API_KEY:
-        check_key(key)
-
+def search_audio(query: str = Query(...)):
     try:
         cmd = [
             YTDLP,
@@ -108,7 +106,7 @@ def search_audio(query: str, key: str = Query(None)):
                 status_code=500
             )
 
-        # 🔥 REDIRECT (NO 403, NO CORS)
+        # 🔥 REDIRECT → browser authorised → no 403
         return RedirectResponse(stream, status_code=302)
 
     except Exception as e:
