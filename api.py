@@ -174,12 +174,13 @@ def audio(request: Request, url: str = Query(...)):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 # ================= MIX (TOP 5 MOST VIEWED – FIXED) =================
-# ================= MIX (TOP 10 INDIVIDUAL SONGS ONLY) =================
+#         # 🔥 SORT BY VIEWS → TOP 10
+# ================= MIX (TOP 10 INDIVIDUAL SONGS – FINAL BALANCED) =================
 @app.get("/mix")
 def mix():
     now = time.time()
 
-    # 🔥 CACHE HIT (30 min)
+    # 🔥 CACHE (30 min)
     if MIX_CACHE["data"] and now - MIX_CACHE["ts"] < MIX_TTL:
         return MIX_CACHE["data"]
 
@@ -191,8 +192,8 @@ def mix():
             "--skip-download",
             "--socket-timeout", "10",
             "--dump-json",
-            # 👇 keywords force individual songs
-            "ytsearch25:official music video song"
+            # 👇 thoda broad search
+            "ytsearch40:official song music video"
         ]
 
         p = subprocess.run(
@@ -210,31 +211,27 @@ def mix():
             except:
                 continue
 
-            # ❌ Skip playlists
+            # ❌ playlist skip
             if data.get("_type") == "playlist":
                 continue
 
             duration = data.get("duration")
-            views = data.get("view_count", 0)
+            views = data.get("view_count") or 0
             title = (data.get("title") or "").lower()
 
-            # ❌ Skip invalid duration
+            # ❌ duration missing
             if not duration:
                 continue
 
-            # ❌ Only 2–6 minutes
+            # ✅ 2–6 min only
             if duration < 120 or duration > 360:
                 continue
 
-            # ❌ Skip playlist-like titles
+            # ❌ playlist-like titles
             if any(x in title for x in [
                 "playlist", "mix", "collection",
                 "full album", "non stop", "hours"
             ]):
-                continue
-
-            # ❌ Skip low-view junk
-            if views < 1_000_000:
                 continue
 
             results.append({
