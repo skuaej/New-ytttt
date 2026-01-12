@@ -1,15 +1,17 @@
 import requests
+import subprocess
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="Main API (Worker-based)")
+app = FastAPI(title="Main API (Worker-based + Search)")
 
 # ================= CONFIG =================
 WORKER_URL = "http://127.0.0.1:9000/resolve"
+WORKER_TIMEOUT = 15
+RETRY_ON_FAIL = 1
 
-WORKER_TIMEOUT = 15      # 🔥 was 5 → caused errors
-RETRY_ON_FAIL = 1        # retry once if worker slow
+YTDLP = "yt-dlp"
 
 # ================= CORS =================
 app.add_middleware(
@@ -24,15 +26,81 @@ app.add_middleware(
 def root():
     return {
         "status": "running",
-        "endpoint": "/audio?url="
+        "endpoints": {
+            "search": "/search?q=",
+            "audio": "/audio?url="
+        }
     }
+
+# ================= SEARCH API =================
+@app.get("/search")
+def search(q: str = Query(...)):
+    """
+    Keyword search
+    Returns: title, thumbnail, duration, youtube_url
+    """
+    try:
+        cmd = [
+            YTDLP,
+            "--quiet",
+            "--no-warnings",
+            "--skip-download",
+            "--print",
+            "%(title)s||%(id)s||%(duration)s",
+            f"ytsearch5:{q}"   # 5 results only (fast)
+        ]
+
+        p = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=20
+        )
+
+        results = []
+
+        for line in p.stdout.strip().split("\n"):
+            if "||" not in line:
+                continue
+
+            title, vid, duration = line.split("||", 2)
+
+            results.append({
+                "title": title,
+                "url": f"https://youtu.be/{vid}",
+                "thumbnail": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+                "duration": int(duration) if duration.isdigit() else None
+            })
+
+        if not results:
+            return JSONResponse(
+                {"error": "no_results"},
+                status_code=404
+            )
+
+        return {
+            "query": q,
+            "results": results
+        }
+
+    except subprocess.TimeoutExpired:
+        return JSONResponse(
+            {"error": "search_timeout"},
+            status_code=504
+        )
+    except Exception as e:
+        return JSONResponse(
+            {"error": "search_failed", "detail": str(e)},
+            status_code=500
+        )
 
 # ================= AUDIO =================
 @app.get("/audio")
 def audio(request: Request, url: str = Query(...)):
     last_error = None
+    stream_url = None
 
-    # retry logic (1 retry)
+    # retry logic
     for _ in range(RETRY_ON_FAIL + 1):
         try:
             r = requests.get(
@@ -51,7 +119,6 @@ def audio(request: Request, url: str = Query(...)):
 
         except Exception as e:
             last_error = str(e)
-            stream_url = None
 
     if not stream_url:
         return JSONResponse(
