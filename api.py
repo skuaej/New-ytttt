@@ -1,4 +1,8 @@
-import subprocess, time, json, os, requests
+import subprocess
+import time
+import json
+import os
+import requests
 from fastapi import FastAPI, Query
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,16 +13,20 @@ YTDLP = "yt-dlp"
 COOKIES = "cookies.txt"
 CACHE_FILE = "cache.json"
 
-STREAM_TTL = 300
+# ================= CONFIG =================
+MAX_CANDIDATES = 5        # try top 5 videos
+STREAM_TIMEOUT = 10       # seconds
+CACHE_TTL = 24 * 3600     # 24h
 
-# ---------- LOAD CACHE ----------
+# ================= CACHE =================
 if os.path.exists(CACHE_FILE):
-    with open(CACHE_FILE, "r") as f:
-        VIDEO_CACHE = json.load(f)
+    try:
+        with open(CACHE_FILE, "r") as f:
+            VIDEO_CACHE = json.load(f)
+    except Exception:
+        VIDEO_CACHE = {}
 else:
     VIDEO_CACHE = {}
-
-STREAM_CACHE = {}
 
 def save_cache():
     with open(CACHE_FILE, "w") as f:
@@ -31,66 +39,74 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------- ONLY ENDPOINT ----------
-@app.get("/search-audio")
-def search_audio(query: str = Query(...)):
-    q = query.strip().lower()
-
-    # 1) videoId cache
-    video_id = VIDEO_CACHE.get(q)
-
-    # 2) external search (FAST)
-    if not video_id:
-        try:
-            r = requests.get(
-                "https://piped.video/api/search",
-                params={"q": query, "type": "video", "region": "IN"},
-                timeout=5
-            )
-            data = r.json()
-            if data.get("items"):
-                video_id = data["items"][0]["url"].split("v=")[1]
-                VIDEO_CACHE[q] = video_id
-                save_cache()
-        except Exception:
-            video_id = None
-
-    # 3) fallback yt-dlp search
-    if not video_id:
-        cmd = [
-            YTDLP,
-            "--cookies", COOKIES,
-            "--print", "%(id)s",
-            "ytsearch1:" + query
-        ]
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        video_id = p.stdout.strip()
-        if not video_id:
-            return JSONResponse({"error": "no_video"}, status_code=500)
-
-        VIDEO_CACHE[q] = video_id
-        save_cache()
-
-    # 4) stream cache
-    if video_id in STREAM_CACHE:
-        stream, ts = STREAM_CACHE[video_id]
-        if time.time() - ts < STREAM_TTL:
-            return RedirectResponse(stream, status_code=302)
-
-    # 5) generate stream
+# ================= STREAM FUNCTION =================
+def get_stream(video_id: str):
     cmd = [
         YTDLP,
         "--cookies", COOKIES,
         "--force-ipv4",
-        "-f", "bestaudio",
+        "--geo-bypass",
+        "--add-header", "Referer:https://www.youtube.com/",
+        "--add-header", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "-f", "bestaudio[ext=m4a]/bestaudio/best",
         "-g",
         f"https://www.youtube.com/watch?v={video_id}"
     ]
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-    stream = p.stdout.strip()
 
-    if not stream:
-        return JSONResponse({"error": "no_stream"}, status_code=500)
+    try:
+        p = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=STREAM_TIMEOUT
+        )
+        stream = p.stdout.strip()
+        if stream.startswith("http"):
+            return stream
+    except Exception:
+        pass
 
-    STREAM_CACHE[video_id] = (stream, time.time())
-    return RedirectResponse(stream, status_code=302)
+    return None
+
+# ================= MAIN ENDPOINT =================
+@app.get("/search-audio")
+def search_audio(query: str = Query(...)):
+    q = query.strip().lower()
+
+    # 1️⃣ If cached → instant
+    if q in VIDEO_CACHE:
+        stream = get_stream(VIDEO_CACHE[q])
+        if stream:
+            return RedirectResponse(stream, status_code=302)
+
+    # 2️⃣ FAST external search (Piped)
+    try:
+        r = requests.get(
+            "https://piped.video/api/search",
+            params={"q": query, "type": "video"},
+            timeout=5
+        )
+        items = r.json().get("items", [])[:MAX_CANDIDATES]
+    except Exception:
+        items = []
+
+    # 3️⃣ Try each candidate until one works
+    for item in items:
+        if "url" not in item:
+            continue
+
+        if "v=" not in item["url"]:
+            continue
+
+        video_id = item["url"].split("v=")[1]
+        stream = get_stream(video_id)
+
+        if stream:
+            VIDEO_CACHE[q] = video_id
+            save_cache()
+            return RedirectResponse(stream, status_code=302)
+
+    return JSONResponse(
+        {"error": "no_playable_stream"},
+        status_code=500
+    )
