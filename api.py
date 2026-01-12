@@ -1,5 +1,4 @@
 import subprocess
-import requests
 import json
 import os
 from fastapi import FastAPI, Query
@@ -11,14 +10,6 @@ app = FastAPI(title="YT Music API")
 YTDLP = "yt-dlp"
 COOKIES = "cookies.txt"
 CACHE_FILE = "cache.json"
-
-# ---------- PIPED MIRRORS ----------
-PIPED_MIRRORS = [
-    "https://piped.video",
-    "https://piped.adminforge.de",
-    "https://piped.kavin.rocks",
-    "https://piped.projectsegfau.lt"
-]
 
 # ---------- LOAD CACHE ----------
 if os.path.exists(CACHE_FILE):
@@ -49,7 +40,7 @@ def root():
         "endpoints": ["/search?q=", "/audio?url="]
     }
 
-# ================= SEARCH =================
+# ================= SEARCH (yt-dlp ONLY) =================
 @app.get("/search")
 def search(q: str = Query(...)):
     key = q.strip().lower()
@@ -62,57 +53,56 @@ def search(q: str = Query(...)):
             "results": SEARCH_CACHE[key]
         }
 
-    last_error = None
+    try:
+        # yt-dlp search (ALWAYS WORKS)
+        cmd = [
+            YTDLP,
+            "--skip-download",
+            "--print",
+            "%(title)s||%(id)s||%(duration)s",
+            f"ytsearch10:{q}"
+        ]
 
-    # 2️⃣ TRY MULTIPLE MIRRORS
-    for mirror in PIPED_MIRRORS:
-        try:
-            r = requests.get(
-                f"{mirror}/api/search",
-                params={"q": q, "type": "video"},
-                timeout=4
-            )
+        p = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=15
+        )
 
-            if r.status_code != 200:
+        lines = p.stdout.strip().split("\n")
+        results = []
+
+        for line in lines:
+            if "||" not in line:
                 continue
 
-            data = r.json()
-            items = data.get("items", [])
+            title, vid, duration = line.split("||", 2)
+            results.append({
+                "title": title,
+                "url": f"https://youtu.be/{vid}",
+                "duration": int(duration) if duration.isdigit() else None,
+                "thumbnail": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+            })
 
-            if not items:
-                continue
+        if not results:
+            return JSONResponse({"error": "no_results"}, status_code=404)
 
-            results = []
-            for i in items[:10]:
-                results.append({
-                    "title": i.get("title"),
-                    "url": i.get("url"),
-                    "duration": i.get("duration"),
-                    "thumbnail": i.get("thumbnail")
-                })
+        # SAVE CACHE
+        SEARCH_CACHE[key] = results
+        save_cache()
 
-            # SAVE TO CACHE
-            SEARCH_CACHE[key] = results
-            save_cache()
+        return {
+            "query": q,
+            "cached": False,
+            "results": results
+        }
 
-            return {
-                "query": q,
-                "cached": False,
-                "results": results
-            }
-
-        except Exception as e:
-            last_error = str(e)
-            continue
-
-    # 3️⃣ ALL MIRRORS FAILED
-    return JSONResponse(
-        {
-            "error": "search_failed",
-            "detail": last_error
-        },
-        status_code=500
-    )
+    except Exception as e:
+        return JSONResponse(
+            {"error": "search_failed", "detail": str(e)},
+            status_code=500
+        )
 
 # ================= AUDIO =================
 @app.get("/audio")
@@ -137,17 +127,10 @@ def audio(url: str = Query(...)):
         )
 
         stream = p.stdout.strip()
-
         if not stream.startswith("http"):
-            return JSONResponse(
-                {"error": "stream_failed"},
-                status_code=500
-            )
+            return JSONResponse({"error": "stream_failed"}, status_code=500)
 
         return RedirectResponse(stream, status_code=302)
 
     except Exception as e:
-        return JSONResponse(
-            {"error": str(e)},
-            status_code=500
-        )
+        return JSONResponse({"error": str(e)}, status_code=500)
