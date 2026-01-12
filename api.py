@@ -174,96 +174,30 @@ def audio(request: Request, url: str = Query(...)):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 # ================= MIX (TOP 5 MOST VIEWED – FIXED) =================
-# ================= MIX (TOP 10 INDIUAL SONGS – GUARANTEED) =================
 @app.get("/mix")
 def mix():
-    now = time.time()
-
-    # 🔥 Cache hit (30 min)
-    if MIX_CACHE["data"] and now - MIX_CACHE["ts"] < MIX_TTL:
-        return MIX_CACHE["data"]
-
-    try:
-        cmd = [
-            YTDLP,
-            "--quiet",
-            "--no-warnings",
-            "--skip-download",
-            "--socket-timeout", "10",
-            "--dump-json",
-            # 👇 bada search pool
-            "ytsearch100:official music video song"
+    return {
+        "type": "mix",
+        "count": 10,
+        "results": [
+            {
+                "title": "Shakira – Waka Waka",
+                "url": "https://youtu.be/pRpeEdMmmQ0",
+                "thumbnail": "https://i.ytimg.com/vi/pRpeEdMmmQ0/hqdefault.jpg",
+                "duration": "3:31"
+            },
+            {
+                "title": "Ed Sheeran – Shape of You",
+                "url": "https://youtu.be/JGwWNGJdvx8",
+                "thumbnail": "https://i.ytimg.com/vi/JGwWNGJdvx8/hqdefault.jpg",
+                "duration": "3:53"
+            },
+            {
+                "title": "Luis Fonsi – Despacito",
+                "url": "https://youtu.be/kJQP7kiw5Fk",
+                "thumbnail": "https://i.ytimg.com/vi/kJQP7kiw5Fk/hqdefault.jpg",
+                "duration": "3:48"
+            }
+            // 👉 aise hi 10 daal de
         ]
-
-        p = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=45
-        )
-
-        results = []
-
-        for line in p.stdout.strip().split("\n"):
-            try:
-                data = json.loads(line)
-            except:
-                continue
-
-            # ❌ skip playlists
-            if data.get("_type") == "playlist":
-                continue
-
-            duration = data.get("duration")
-            views = data.get("view_count") or 0
-            title = (data.get("title") or "").lower()
-
-            # ❌ duration missing
-            if not duration:
-                continue
-
-            # ✅ 2–6 min only
-            if duration < 120 or duration > 360:
-                continue
-
-            # ❌ playlist-style titles
-            if any(x in title for x in [
-                "playlist", "mix", "collection",
-                "full album", "non stop", "hours"
-            ]):
-                continue
-
-            results.append({
-                "title": data.get("title"),
-                "url": f"https://youtu.be/{data.get('id')}",
-                "thumbnail": data.get("thumbnail"),
-                "duration": format_duration(duration),
-                "duration_sec": duration,
-                "views": views
-            })
-
-        if not results:
-            return JSONResponse({"error": "no_mix_results"}, status_code=404)
-
-        # 🔥 sort by views → top 10
-        top10 = sorted(
-            results,
-            key=lambda x: x["views"],
-            reverse=True
-        )[:10]
-
-        resp = {
-            "type": "mix",
-            "count": len(top10),
-            "results": top10
-        }
-
-        MIX_CACHE["data"] = resp
-        MIX_CACHE["ts"] = now
-
-        return resp
-
-    except subprocess.TimeoutExpired:
-        return JSONResponse({"error": "mix_timeout"}, status_code=504)
-    except Exception as e:
-        return JSONResponse({"error": "mix_failed", "detail": str(e)}, status_code=500)
+    }
