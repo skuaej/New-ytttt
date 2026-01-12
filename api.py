@@ -1,23 +1,18 @@
-import os
 import time
 import psutil
 import subprocess
 from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-# ==========================
-# APP INIT
-# ==========================
 app = FastAPI(title="YT Stream API")
 
 # ==========================
-# CORS FIX (IMPORTANT)
+# CORS (safe even with redirect)
 # ==========================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # allow all domains
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -48,9 +43,8 @@ def load_level(cpu):
         return "MEDIUM"
     return "HIGH"
 
-
 # ==========================
-# ROOT / HEALTH
+# HEALTH
 # ==========================
 @app.get("/")
 async def root():
@@ -60,39 +54,28 @@ async def root():
         "endpoints": ["/audio", "/video", "/status", "/ping"]
     }
 
-
 @app.get("/ping")
 async def ping():
     return {"ping": "pong", "uptime": uptime()}
 
-
 # ==========================
-# SERVER STATUS
+# STATUS
 # ==========================
 @app.get("/status")
 async def status():
-    cpu = psutil.cpu_percent(interval=0.5)
+    cpu = psutil.cpu_percent(interval=0.3)
     ram = psutil.virtual_memory()
-
     return {
-        "cpu": {
-            "usage_percent": cpu,
-            "load_level": load_level(cpu)
-        },
-        "ram": {
-            "total_mb": int(ram.total / 1024 / 1024),
-            "used_mb": int(ram.used / 1024 / 1024),
-            "usage_percent": ram.percent
-        },
+        "cpu": cpu,
+        "ram_percent": ram.percent,
         "policy": {
             "video_allowed": cpu < 80,
             "max_video_quality": MAX_VIDEO_QUALITY
         }
     }
 
-
 # ==========================
-# AUDIO STREAM
+# AUDIO (REDIRECT MODE ✅)
 # ==========================
 @app.get("/audio")
 async def audio(url: str = Query(...)):
@@ -100,11 +83,10 @@ async def audio(url: str = Query(...)):
         cmd = [
             YTDLP,
             "--cookies", COOKIES,
-            "--remote-components", "ejs:github",
             "--force-ipv4",
             "-f", "bestaudio",
             "-g",
-            url,
+            url
         ]
 
         proc = subprocess.run(
@@ -121,10 +103,11 @@ async def audio(url: str = Query(...)):
                 status_code=500
             )
 
-        return {
-            "status": "success",
-            "audio": stream
-        }
+        # 🔥 PRODUCTION FIX: REDIRECT
+        return RedirectResponse(
+            url=stream,
+            status_code=302
+        )
 
     except Exception as e:
         return JSONResponse(
@@ -132,14 +115,12 @@ async def audio(url: str = Query(...)):
             status_code=500
         )
 
-
 # ==========================
-# VIDEO STREAM (360p)
+# VIDEO (OPTIONAL, 360p)
 # ==========================
 @app.get("/video")
 async def video(url: str = Query(...)):
     cpu = psutil.cpu_percent(interval=0.3)
-
     if cpu > 80:
         return JSONResponse(
             {"status": "blocked", "reason": "high_cpu"},
@@ -150,11 +131,10 @@ async def video(url: str = Query(...)):
         cmd = [
             YTDLP,
             "--cookies", COOKIES,
-            "--remote-components", "ejs:github",
             "--force-ipv4",
             "-f", "bv*[height<=360]+ba/b",
             "-g",
-            url,
+            url
         ]
 
         proc = subprocess.run(
@@ -171,11 +151,10 @@ async def video(url: str = Query(...)):
                 status_code=500
             )
 
-        return {
-            "status": "success",
-            "quality": "360p",
-            "video": stream
-        }
+        return RedirectResponse(
+            url=stream,
+            status_code=302
+        )
 
     except Exception as e:
         return JSONResponse(
