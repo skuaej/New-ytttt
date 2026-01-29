@@ -82,6 +82,8 @@ def search(q: str = Query(...)):
     try:
         cmd = [
             YTDLP,
+            # 🔥 FIX: Android Client Bypass for Search
+            "--extractor-args", "youtube:player_client=android",
             "--quiet",
             "--no-warnings",
             "--skip-download",
@@ -145,8 +147,7 @@ def audio(request: Request, url: str = Query(...)):
         if not stream_url:
             cmd = [
                 YTDLP,
-                # 🔥 OPTION 2 FIX: Android Client Bypass
-                # This makes YouTube think the request is from a phone app, preventing IP blocks
+                # 🔥 FIX: Android Client Bypass for Audio
                 "--extractor-args", "youtube:player_client=android",
                 "--force-ipv4",
                 "--quiet",
