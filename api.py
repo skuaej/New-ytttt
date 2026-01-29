@@ -12,8 +12,9 @@ app = FastAPI(title="YT Music API (Fast + Spotify-style)")
 
 # ================= CONFIG =================
 YTDLP = "yt-dlp"
-# Set to None to avoid crashes if file is missing. 
-# If you DO have a working cookies.txt, change this back to "cookies.txt"
+
+# ⚠️ SETTING COOKIES TO NONE TO PREVENT CRASHES ON HEROKU
+# If you eventually upload a valid cookies.txt, you can change this back to "cookies.txt"
 COOKIES = None 
 CACHE_FILE = "cache.json"
 
@@ -144,7 +145,8 @@ def audio(request: Request, url: str = Query(...)):
         if not stream_url:
             cmd = [
                 YTDLP,
-                # 🔥 FIX 1: Android Client Bypass (Tricks YouTube)
+                # 🔥 OPTION 2 FIX: Android Client Bypass
+                # This makes YouTube think the request is from a phone app, preventing IP blocks
                 "--extractor-args", "youtube:player_client=android",
                 "--force-ipv4",
                 "--quiet",
@@ -152,13 +154,13 @@ def audio(request: Request, url: str = Query(...)):
                 "--no-playlist",
                 "--socket-timeout", "10",
                 "--geo-bypass",
-                "--geo-bypass-country", "US",
+                # "--geo-bypass-country", "US", # Optional: Remove if causing issues
                 "-f", "140",          # m4a = fastest
                 "-g",
                 url
             ]
 
-            # Add cookies ONLY if configured
+            # Only add cookies if the variable is not None
             if COOKIES:
                 cmd.insert(1, "--cookies")
                 cmd.insert(2, COOKIES)
@@ -167,17 +169,17 @@ def audio(request: Request, url: str = Query(...)):
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=20 # Increased timeout slightly
+                timeout=20  # Increased timeout slightly
             )
 
             stream_url = p.stdout.strip()
-            
-            # 🔥 FIX 2: Debugging Logs (Prints error to Heroku logs if it fails)
+
+            # 🔥 DEBUGGING: If stream fails, print the REAL error to Heroku logs
             if not stream_url.startswith("http"):
-                print(f"ERROR STDERR: {p.stderr}")
+                print(f"ERROR STDERR: {p.stderr}") 
                 print(f"ERROR STDOUT: {p.stdout}")
                 return JSONResponse({
-                    "error": "stream_failed", 
+                    "error": "stream_failed",
                     "details": "Check Heroku logs for stderr output"
                 }, status_code=500)
 
@@ -214,6 +216,5 @@ def audio(request: Request, url: str = Query(...)):
         )
 
     except Exception as e:
-        # Print actual python error to logs
         print(f"PYTHON ERROR: {str(e)}")
         return JSONResponse({"error": str(e)}, status_code=500)
