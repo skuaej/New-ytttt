@@ -4,3 +4,4 @@ requests
 yt-dlp
 psutil
 pycryptodomex
+youtube-search-python
