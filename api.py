@@ -8,15 +8,16 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
+# ================= APP =================
 app = FastAPI(title="YT Audio API")
 
 # ================= CONFIG =================
 YTDLP = "yt-dlp"
-COOKIES = "cookies.txt"          # optional
+COOKIES = "cookies.txt"     # optional
 CACHE_FILE = "cache.json"
 
-AUDIO_CACHE = {}                # { url: {stream, ts} }
-AUDIO_CACHE_TTL = 600            # 10 min (IMPORTANT)
+AUDIO_CACHE = {}            # { url: {stream, ts} }
+AUDIO_CACHE_TTL = 600       # 10 minutes
 
 # ================= LOAD SEARCH CACHE =================
 if os.path.exists(CACHE_FILE):
@@ -41,6 +42,22 @@ def format_duration(sec):
         return f"{m}:{s:02d}"
     except:
         return None
+
+# ================= YT-DLP BASE CMD =================
+def base_ytdlp_cmd():
+    cmd = [
+        YTDLP,
+        "--js-runtimes", "node",
+        "--extractor-args", "youtube:player_client=android",
+        "--no-playlist",
+        "--force-ipv4",
+        "--geo-bypass",
+    ]
+
+    if os.path.exists(COOKIES):
+        cmd += ["--cookies", COOKIES]
+
+    return cmd
 
 # ================= CORS =================
 app.add_middleware(
@@ -70,8 +87,7 @@ def search(q: str = Query(...)):
         return {"query": q, "cached": True, "results": SEARCH_CACHE[key]}
 
     try:
-        cmd = [
-            YTDLP,
+        cmd = base_ytdlp_cmd() + [
             "--quiet",
             "--skip-download",
             "--print",
@@ -79,7 +95,12 @@ def search(q: str = Query(...)):
             f"ytsearch1:{q}"
         ]
 
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        p = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=20
+        )
 
         if p.returncode != 0:
             return JSONResponse(
@@ -117,35 +138,31 @@ def audio(request: Request, url: str = Query(...)):
     try:
         now = time.time()
 
-        # 🔥 cache hit
+        # cache hit
         if url in AUDIO_CACHE and now - AUDIO_CACHE[url]["ts"] < AUDIO_CACHE_TTL:
             stream_url = AUDIO_CACHE[url]["stream"]
         else:
-            cmd = [
-                YTDLP,
+            cmd = base_ytdlp_cmd() + [
                 "--quiet",
                 "--no-warnings",
-                "--no-playlist",
                 "--socket-timeout", "10",
-                "--force-ipv4",
-                "--geo-bypass",
                 "-f", "bestaudio[ext=m4a]/bestaudio",
                 "-g",
                 url
             ]
 
-            # cookies only if file exists
-            if os.path.exists(COOKIES):
-                cmd.insert(1, "--cookies")
-                cmd.insert(2, COOKIES)
-
-            p = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+            p = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=25
+            )
 
             if p.returncode != 0 or not p.stdout.startswith("http"):
-                return JSONResponse({
-                    "error": "stream_failed",
-                    "stderr": p.stderr
-                }, status_code=500)
+                return JSONResponse(
+                    {"error": "stream_failed", "detail": p.stderr},
+                    status_code=500
+                )
 
             stream_url = p.stdout.strip()
             AUDIO_CACHE[url] = {"stream": stream_url, "ts": now}
@@ -153,17 +170,22 @@ def audio(request: Request, url: str = Query(...)):
         headers = {
             "User-Agent": "Mozilla/5.0",
             "Referer": "https://www.youtube.com/",
-            "Origin": "https://www.youtube.com"
+            "Origin": "https://www.youtube.com",
         }
 
         if request.headers.get("range"):
             headers["Range"] = request.headers["range"]
 
-        r = requests.get(stream_url, headers=headers, stream=True, timeout=10)
+        r = requests.get(
+            stream_url,
+            headers=headers,
+            stream=True,
+            timeout=10
+        )
 
         resp_headers = {
             "Content-Type": r.headers.get("Content-Type", "audio/mp4"),
-            "Accept-Ranges": "bytes"
+            "Accept-Ranges": "bytes",
         }
 
         if "Content-Range" in r.headers:
