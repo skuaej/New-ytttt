@@ -12,11 +12,11 @@ app = FastAPI(title="YT Audio API")
 
 # ================= CONFIG =================
 YTDLP = "yt-dlp"
-COOKIES = "cookies.txt"          # optional
+COOKIES = "cookies.txt"
 CACHE_FILE = "cache.json"
 
-AUDIO_CACHE = {}                # { url: {stream, ts} }
-AUDIO_CACHE_TTL = 600            # 10 minutes
+AUDIO_CACHE = {}
+AUDIO_CACHE_TTL = 600
 
 # ================= LOAD SEARCH CACHE =================
 if os.path.exists(CACHE_FILE):
@@ -44,25 +44,21 @@ def format_duration(sec):
 
 # ================= yt-dlp BASE CMD =================
 def base_ytdlp_cmd():
-    """
-    IMPORTANT LOGIC:
-    - WEB client ONLY when cookies exist
-    - ANDROID client ONLY when cookies DO NOT exist
-    """
     cmd = [
         YTDLP,
-        "--js-runtimes", "node",
         "--no-playlist",
         "--force-ipv4",
         "--geo-bypass",
     ]
 
+    # ✔ WEB client only if cookies exist
     if os.path.exists(COOKIES):
         cmd += [
             "--cookies", COOKIES,
             "--extractor-args", "youtube:player_client=web"
         ]
     else:
+        # ✔ ANDROID client when no cookies
         cmd += [
             "--extractor-args", "youtube:player_client=android"
         ]
@@ -96,46 +92,41 @@ def search(q: str = Query(...)):
     if key in SEARCH_CACHE:
         return {"query": q, "cached": True, "results": SEARCH_CACHE[key]}
 
-    try:
-        cmd = base_ytdlp_cmd() + [
-            "--quiet",
-            "--skip-download",
-            "--print",
-            "%(title)s||%(id)s||%(duration)s",
-            f"ytsearch1:{q}"
-        ]
+    cmd = base_ytdlp_cmd() + [
+        "--quiet",
+        "--skip-download",
+        "--print",
+        "%(title)s||%(id)s||%(duration)s",
+        f"ytsearch1:{q}"
+    ]
 
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
 
-        if p.returncode != 0:
-            return JSONResponse(
-                {"error": "yt-dlp_failed", "detail": p.stderr},
-                status_code=500
-            )
+    if p.returncode != 0:
+        return JSONResponse(
+            {"error": "yt-dlp_failed", "detail": p.stderr},
+            status_code=500
+        )
 
-        results = []
-        for line in p.stdout.strip().split("\n"):
-            if "||" not in line:
-                continue
+    results = []
+    for line in p.stdout.strip().split("\n"):
+        if "||" not in line:
+            continue
+        title, vid, dur = line.split("||", 2)
+        results.append({
+            "title": title,
+            "url": f"https://youtu.be/{vid}",
+            "duration": format_duration(dur),
+            "thumbnail": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+        })
 
-            title, vid, dur = line.split("||", 2)
-            results.append({
-                "title": title,
-                "url": f"https://youtu.be/{vid}",
-                "duration": format_duration(dur),
-                "thumbnail": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
-            })
+    if not results:
+        return JSONResponse({"error": "no_results"}, status_code=404)
 
-        if not results:
-            return JSONResponse({"error": "no_results"}, status_code=404)
+    SEARCH_CACHE[key] = results
+    save_cache()
 
-        SEARCH_CACHE[key] = results
-        save_cache()
-
-        return {"query": q, "cached": False, "results": results}
-
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+    return {"query": q, "cached": False, "results": results}
 
 # ================= AUDIO =================
 @app.get("/audio")
@@ -143,7 +134,6 @@ def audio(request: Request, url: str = Query(...)):
     try:
         now = time.time()
 
-        # ===== cache hit =====
         if url in AUDIO_CACHE and now - AUDIO_CACHE[url]["ts"] < AUDIO_CACHE_TTL:
             stream_url = AUDIO_CACHE[url]["stream"]
         else:
