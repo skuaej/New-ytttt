@@ -1,351 +1,73 @@
-import subprocess
-import json
+# api.py
+from fastapi import FastAPI, Query, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
+from yt_dlp import YoutubeDL
 import os
-import time
-import requests
+import tempfile
 
-from fastapi import FastAPI, Query, Request
-from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
+app = FastAPI(title="YouTube Downloader API")
 
-app = FastAPI(title="YT Audio API")import subprocess
-import json
-import os
-import time
-import requests
+# Common yt-dlp options
+YDL_OPTS = {
+    "format": "bestvideo+bestaudio/best",  # automatically picks best available video+audio
+    "outtmpl": "%(title)s.%(id)s.%(ext)s",
+    "noplaylist": True,
+    "quiet": True,
+    "merge_output_format": "mp4",
+    "restrictfilenames": True
+}
 
-from fastapi import FastAPI, Query, Request
-from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
+AUDIO_OPTS = {
+    "format": "bestaudio[ext=m4a]/bestaudio/best",
+    "outtmpl": "%(title)s.%(id)s.%(ext)s",
+    "noplaylist": True,
+    "quiet": True,
+    "restrictfilenames": True,
+    "postprocessors": [{
+        "key": "FFmpegExtractAudio",
+        "preferredcodec": "mp3",
+        "preferredquality": "192",
+    }]
+}
 
-app = FastAPI(title="YT Audio API")
-
-# ================= CONFIG =================
-YTDLP = "yt-dlp"
-COOKIES = "cookies.txt"          # optional
-CACHE_FILE = "cache.json"
-
-AUDIO_CACHE = {}                # { url: {stream, ts} }
-AUDIO_CACHE_TTL = 600           # 10 min
-
-# ================= LOAD SEARCH CACHE =================
-if os.path.exists(CACHE_FILE):
+@app.get("/video")
+async def download_video(url: str = Query(..., description="YouTube Video URL")):
+    """
+    Download YouTube video and return file path
+    """
     try:
-        with open(CACHE_FILE, "r") as f:
-            SEARCH_CACHE = json.load(f)
-        if not isinstance(SEARCH_CACHE, dict):
-            SEARCH_CACHE = {}
-    except Exception:
-        SEARCH_CACHE = {}
-else:
-    SEARCH_CACHE = {}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            opts = YDL_OPTS.copy()
+            opts["outtmpl"] = os.path.join(tmpdir, "%(title)s.%(id)s.%(ext)s")
+            
+            with YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filename = ydl.prepare_filename(info)
 
-def save_cache():
-    with open(CACHE_FILE, "w") as f:
-        json.dump(SEARCH_CACHE, f, indent=2)
-
-def format_duration(sec):
-    try:
-        sec = int(sec)
-        m, s = divmod(sec, 60)
-        return f"{m}:{s:02d}"
-    except:
-        return None
-
-# ================= CORS =================
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ================= ROOT =================
-@app.get("/")
-def root():
-    return {
-        "status": "running",
-        "endpoints": {
-            "search": "/search?q=",
-            "audio": "/audio?url="
-        }
-    }
-
-# ================= SEARCH =================
-@app.get("/search")
-def search(q: str = Query(...)):
-    key = q.lower().strip()
-    if key in SEARCH_CACHE:
-        return {"query": q, "cached": True, "results": SEARCH_CACHE[key]}
-
-    try:
-        cmd = [
-            YTDLP,
-            "--quiet",
-            "--skip-download",
-            "--print", "%(title)s||%(id)s||%(duration)s",
-            f"ytsearch5:{q}"  # returns top 5 results
-        ]
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        if p.returncode != 0:
-            return JSONResponse({"error": "yt-dlp_failed", "detail": p.stderr}, status_code=500)
-
-        results = []
-        for line in p.stdout.strip().split("\n"):
-            if "||" not in line:
-                continue
-            title, vid, dur = line.split("||", 2)
-            results.append({
-                "title": title,
-                "url": f"https://youtu.be/{vid}",
-                "duration": format_duration(dur),
-                "thumbnail": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
-            })
-
-        if not results:
-            return JSONResponse({"error": "no_results"}, status_code=404)
-
-        SEARCH_CACHE[key] = results
-        save_cache()
-        return {"query": q, "cached": False, "results": results}
-
+            return FileResponse(filename, filename=os.path.basename(filename))
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        raise HTTPException(status_code=400, detail=str(e))
 
-# ================= AUDIO =================
+
 @app.get("/audio")
-def audio(request: Request, url: str = Query(...)):
+async def download_audio(url: str = Query(..., description="YouTube Video URL")):
+    """
+    Download YouTube audio only and return file path
+    """
     try:
-        now = time.time()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            opts = AUDIO_OPTS.copy()
+            opts["outtmpl"] = os.path.join(tmpdir, "%(title)s.%(id)s.%(ext)s")
+            
+            with YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filename = os.path.splitext(ydl.prepare_filename(info))[0] + ".mp3"
 
-        # cache hit
-        if url in AUDIO_CACHE and now - AUDIO_CACHE[url]["ts"] < AUDIO_CACHE_TTL:
-            stream_url = AUDIO_CACHE[url]["stream"]
-        else:
-            cmd = [
-                YTDLP,
-                "--quiet",
-                "--no-warnings",
-                "--no-playlist",
-                "--socket-timeout", "10",
-                "--force-ipv4",
-                "--geo-bypass",
-                "-f", "bestaudio/best",  # ✅ flexible audio format
-                "-g",
-                url
-            ]
-
-            if os.path.exists(COOKIES):
-                cmd.insert(1, "--cookies")
-                cmd.insert(2, COOKIES)
-
-            p = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-            if p.returncode != 0 or not p.stdout.startswith("http"):
-                return JSONResponse({"error": "stream_failed", "detail": p.stderr}, status_code=500)
-
-            stream_url = p.stdout.strip()
-            AUDIO_CACHE[url] = {"stream": stream_url, "ts": now}
-
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://www.youtube.com/",
-            "Origin": "https://www.youtube.com"
-        }
-        if request.headers.get("range"):
-            headers["Range"] = request.headers["range"]
-
-        r = requests.get(stream_url, headers=headers, stream=True, timeout=10)
-
-        resp_headers = {
-            "Content-Type": r.headers.get("Content-Type", "audio/mp4"),
-            "Accept-Ranges": "bytes"
-        }
-        if "Content-Range" in r.headers:
-            resp_headers["Content-Range"] = r.headers["Content-Range"]
-        if "Content-Length" in r.headers:
-            resp_headers["Content-Length"] = r.headers["Content-Length"]
-
-        status = 206 if "Range" in headers else 200
-
-        return StreamingResponse(r.iter_content(chunk_size=1024*64), status_code=status, headers=resp_headers)
-
+            return FileResponse(filename, filename=os.path.basename(filename))
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        raise HTTPException(status_code=400, detail=str(e))
 
-# ================= CONFIG =================
-YTDLP = "yt-dlp"
-COOKIES = "cookies.txt"
-CACHE_FILE = "cache.json"
 
-AUDIO_CACHE = {}
-AUDIO_CACHE_TTL = 600
-
-# ================= LOAD SEARCH CACHE =================
-if os.path.exists(CACHE_FILE):
-    try:
-        with open(CACHE_FILE, "r") as f:
-            SEARCH_CACHE = json.load(f)
-        if not isinstance(SEARCH_CACHE, dict):
-            SEARCH_CACHE = {}
-    except Exception:
-        SEARCH_CACHE = {}
-else:
-    SEARCH_CACHE = {}
-
-def save_cache():
-    with open(CACHE_FILE, "w") as f:
-        json.dump(SEARCH_CACHE, f, indent=2)
-
-def format_duration(sec):
-    try:
-        sec = int(sec)
-        m, s = divmod(sec, 60)
-        return f"{m}:{s:02d}"
-    except:
-        return None
-
-# ================= yt-dlp BASE CMD =================
-def base_ytdlp_cmd():
-    cmd = [
-        YTDLP,
-        "--no-playlist",
-        "--force-ipv4",
-        "--geo-bypass",
-    ]
-
-    # ✔ WEB client only if cookies exist
-    if os.path.exists(COOKIES):
-        cmd += [
-            "--cookies", COOKIES,
-            "--extractor-args", "youtube:player_client=web"
-        ]
-    else:
-        # ✔ ANDROID client when no cookies
-        cmd += [
-            "--extractor-args", "youtube:player_client=android"
-        ]
-
-    return cmd
-
-# ================= CORS =================
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ================= ROOT =================
 @app.get("/")
-def root():
-    return {
-        "status": "running",
-        "endpoints": {
-            "search": "/search?q=",
-            "audio": "/audio?url="
-        }
-    }
-
-# ================= SEARCH =================
-@app.get("/search")
-def search(q: str = Query(...)):
-    key = q.lower().strip()
-
-    if key in SEARCH_CACHE:
-        return {"query": q, "cached": True, "results": SEARCH_CACHE[key]}
-
-    cmd = base_ytdlp_cmd() + [
-        "--quiet",
-        "--skip-download",
-        "--print",
-        "%(title)s||%(id)s||%(duration)s",
-        f"ytsearch1:{q}"
-    ]
-
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-
-    if p.returncode != 0:
-        return JSONResponse(
-            {"error": "yt-dlp_failed", "detail": p.stderr},
-            status_code=500
-        )
-
-    results = []
-    for line in p.stdout.strip().split("\n"):
-        if "||" not in line:
-            continue
-        title, vid, dur = line.split("||", 2)
-        results.append({
-            "title": title,
-            "url": f"https://youtu.be/{vid}",
-            "duration": format_duration(dur),
-            "thumbnail": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
-        })
-
-    if not results:
-        return JSONResponse({"error": "no_results"}, status_code=404)
-
-    SEARCH_CACHE[key] = results
-    save_cache()
-
-    return {"query": q, "cached": False, "results": results}
-
-# ================= AUDIO =================
-@app.get("/audio")
-def audio(request: Request, url: str = Query(...)):
-    try:
-        now = time.time()
-
-        if url in AUDIO_CACHE and now - AUDIO_CACHE[url]["ts"] < AUDIO_CACHE_TTL:
-            stream_url = AUDIO_CACHE[url]["stream"]
-        else:
-            cmd = base_ytdlp_cmd() + [
-                "--quiet",
-                "--no-warnings",
-                "-f", "bestaudio/best",
-                "-g",
-                url
-            ]
-
-            p = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
-
-            if p.returncode != 0 or not p.stdout.startswith("http"):
-                return JSONResponse({
-                    "error": "stream_failed",
-                    "detail": p.stderr
-                }, status_code=500)
-
-            stream_url = p.stdout.strip()
-            AUDIO_CACHE[url] = {"stream": stream_url, "ts": now}
-
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://www.youtube.com/",
-            "Origin": "https://www.youtube.com"
-        }
-
-        if request.headers.get("range"):
-            headers["Range"] = request.headers["range"]
-
-        r = requests.get(stream_url, headers=headers, stream=True, timeout=10)
-
-        resp_headers = {
-            "Content-Type": r.headers.get("Content-Type", "audio/mp4"),
-            "Accept-Ranges": "bytes"
-        }
-
-        if "Content-Range" in r.headers:
-            resp_headers["Content-Range"] = r.headers["Content-Range"]
-        if "Content-Length" in r.headers:
-            resp_headers["Content-Length"] = r.headers["Content-Length"]
-
-        status = 206 if "Range" in headers else 200
-
-        return StreamingResponse(
-            r.iter_content(chunk_size=1024 * 64),
-            status_code=status,
-            headers=resp_headers
-        )
-
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+async def root():
+    return JSONResponse({"message": "YouTube Downloader API is running", "endpoints": ["/video", "/audio"]})
