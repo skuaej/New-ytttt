@@ -1,43 +1,24 @@
-# =========================
-# Base image
-# =========================
-FROM python:3.10-slim
+FROM python:3.11-slim
 
-# Environment variables
-ENV PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PORT=8000
+# Install dependencies
+RUN apt-get update && \
+    apt-get install -y ffmpeg curl && \
+    pip install --upgrade pip
 
-# =========================
-# Install system dependencies
-# =========================
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    curl \
-    gnupg \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Node.js (yt-dlp JS extraction)
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
-    && node -v \
-    && npm -v
-
-# Set working directory
+# Set workdir
 WORKDIR /app
 
-# Copy Python dependencies first (cache layer)
+# Copy files
+COPY api.py .
 COPY requirements.txt .
-RUN pip install --upgrade pip && pip install -r requirements.txt
+COPY cache.json .   # optional
+COPY cookies.txt .  # optional
 
-# Copy application code
-COPY . .
-
-# Make start.sh executable
-RUN chmod +x start.sh
+# Install Python deps
+RUN pip install -r requirements.txt
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8080
 
-# Start the app
-CMD ["./start.sh"]
+# Run FastAPI
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8080"]
