@@ -1,25 +1,24 @@
 import subprocess
 import json
 import os
-import requests
 import time
+import requests
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="YT Music API (Fast)")
+app = FastAPI(title="YT Audio API")
 
 # ================= CONFIG =================
 YTDLP = "yt-dlp"
-COOKIES = "cookies.txt"
+COOKIES = "cookies.txt"          # optional
 CACHE_FILE = "cache.json"
 
-# Short cache for audio stream URLs (seconds)
-AUDIO_CACHE = {}          # { yt_url: { "stream": url, "ts": time } }
-AUDIO_CACHE_TTL = 600     # 10 minutes
+AUDIO_CACHE = {}                # { url: {stream, ts} }
+AUDIO_CACHE_TTL = 600            # 10 min (IMPORTANT)
 
-# ================= SEARCH CACHE =================
+# ================= LOAD SEARCH CACHE =================
 if os.path.exists(CACHE_FILE):
     try:
         with open(CACHE_FILE, "r") as f:
@@ -35,6 +34,14 @@ def save_cache():
     with open(CACHE_FILE, "w") as f:
         json.dump(SEARCH_CACHE, f, indent=2)
 
+def format_duration(sec):
+    try:
+        sec = int(sec)
+        m, s = divmod(sec, 60)
+        return f"{m}:{s:02d}"
+    except:
+        return None
+
 # ================= CORS =================
 app.add_middleware(
     CORSMiddleware,
@@ -48,50 +55,48 @@ app.add_middleware(
 def root():
     return {
         "status": "running",
-        "endpoints": ["/search?q=", "/audio?url="]
+        "endpoints": {
+            "search": "/search?q=",
+            "audio": "/audio?url="
+        }
     }
 
-# ================= SEARCH (FAST) =================
+# ================= SEARCH =================
 @app.get("/search")
 def search(q: str = Query(...)):
-    key = q.strip().lower()
+    key = q.lower().strip()
 
-    # Safe cache hit
-    if key in SEARCH_CACHE and isinstance(SEARCH_CACHE[key], list):
-        return {
-            "query": q,
-            "cached": True,
-            "results": SEARCH_CACHE[key]
-        }
+    if key in SEARCH_CACHE:
+        return {"query": q, "cached": True, "results": SEARCH_CACHE[key]}
 
     try:
         cmd = [
             YTDLP,
             "--quiet",
-            "--no-warnings",
             "--skip-download",
-            "--socket-timeout", "10",
             "--print",
             "%(title)s||%(id)s||%(duration)s",
-            f"ytsearch3:{q}"      # FAST (3 results only)
+            f"ytsearch1:{q}"
         ]
 
-        p = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=20
-        )
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+
+        if p.returncode != 0:
+            return JSONResponse(
+                {"error": "yt-dlp_failed", "detail": p.stderr},
+                status_code=500
+            )
 
         results = []
         for line in p.stdout.strip().split("\n"):
             if "||" not in line:
                 continue
-            title, vid, duration = line.split("||", 2)
+
+            title, vid, dur = line.split("||", 2)
             results.append({
                 "title": title,
                 "url": f"https://youtu.be/{vid}",
-                "duration": int(duration) if duration.isdigit() else None,
+                "duration": format_duration(dur),
                 "thumbnail": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
             })
 
@@ -101,90 +106,76 @@ def search(q: str = Query(...)):
         SEARCH_CACHE[key] = results
         save_cache()
 
-        return {
-            "query": q,
-            "cached": False,
-            "results": results
-        }
+        return {"query": q, "cached": False, "results": results}
 
-    except subprocess.TimeoutExpired:
-        return JSONResponse(
-            {"error": "search_timeout"},
-            status_code=504
-        )
     except Exception as e:
-        return JSONResponse(
-            {"error": "search_failed", "detail": str(e)},
-            status_code=500
-        )
+        return JSONResponse({"error": str(e)}, status_code=500)
 
-# ================= AUDIO (FAST FIRST PLAY + RANGE) =================
+# ================= AUDIO =================
 @app.get("/audio")
 def audio(request: Request, url: str = Query(...)):
     try:
         now = time.time()
-        stream_url = None
 
-        # 1️⃣ Audio URL cache hit (very fast)
+        # 🔥 cache hit
         if url in AUDIO_CACHE and now - AUDIO_CACHE[url]["ts"] < AUDIO_CACHE_TTL:
             stream_url = AUDIO_CACHE[url]["stream"]
-
-        # 2️⃣ Cache miss → run yt-dlp (optimized)
-        if not stream_url:
+        else:
             cmd = [
                 YTDLP,
-                "--cookies", COOKIES,
-                "--force-ipv4",
                 "--quiet",
                 "--no-warnings",
                 "--no-playlist",
+                "--socket-timeout", "10",
+                "--force-ipv4",
                 "--geo-bypass",
-                "--geo-bypass-country", "US",
-                "-f", "140",          # 🔥 FASTEST AUDIO (m4a)
+                "-f", "bestaudio[ext=m4a]/bestaudio",
                 "-g",
                 url
             ]
 
-            p = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=15
-            )
+            # cookies only if file exists
+            if os.path.exists(COOKIES):
+                cmd.insert(1, "--cookies")
+                cmd.insert(2, COOKIES)
+
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+
+            if p.returncode != 0 or not p.stdout.startswith("http"):
+                return JSONResponse({
+                    "error": "stream_failed",
+                    "stderr": p.stderr
+                }, status_code=500)
 
             stream_url = p.stdout.strip()
-            if not stream_url.startswith("http"):
-                return JSONResponse({"error": "stream_failed"}, status_code=500)
-
             AUDIO_CACHE[url] = {"stream": stream_url, "ts": now}
 
-        # 3️⃣ Proxy stream with RANGE support (seek/progress bar)
         headers = {
             "User-Agent": "Mozilla/5.0",
-            "Referer": "https://www.youtube.com/"
+            "Referer": "https://www.youtube.com/",
+            "Origin": "https://www.youtube.com"
         }
 
-        range_header = request.headers.get("range")
-        if range_header:
-            headers["Range"] = range_header
+        if request.headers.get("range"):
+            headers["Range"] = request.headers["range"]
 
         r = requests.get(stream_url, headers=headers, stream=True, timeout=10)
 
         resp_headers = {
-            "Accept-Ranges": "bytes",
-            "Content-Type": r.headers.get("Content-Type", "audio/mp4")
+            "Content-Type": r.headers.get("Content-Type", "audio/mp4"),
+            "Accept-Ranges": "bytes"
         }
 
-        if "Content-Length" in r.headers:
-            resp_headers["Content-Length"] = r.headers["Content-Length"]
         if "Content-Range" in r.headers:
             resp_headers["Content-Range"] = r.headers["Content-Range"]
+        if "Content-Length" in r.headers:
+            resp_headers["Content-Length"] = r.headers["Content-Length"]
 
-        status_code = 206 if range_header else 200
+        status = 206 if "Range" in headers else 200
 
         return StreamingResponse(
             r.iter_content(chunk_size=1024 * 64),
-            status_code=status_code,
+            status_code=status,
             headers=resp_headers
         )
 
