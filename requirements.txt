@@ -1,5 +1,4 @@
-
-fastapi==0.110.0
-uvicorn[standard]==0.29.0
-requests==2.31.0
-yt-dlp==2025.01.15
+fastapi
+uvicorn
+requests
+yt-dlp
