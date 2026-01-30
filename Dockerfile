@@ -1,24 +1,23 @@
+# Use Python 3.11 slim
 FROM python:3.11-slim
 
-# Install dependencies
+# Install OS dependencies
 RUN apt-get update && \
     apt-get install -y ffmpeg curl && \
-    pip install --upgrade pip
+    rm -rf /var/lib/apt/lists/*
 
 # Set workdir
 WORKDIR /app
 
-# Copy files
+# Copy app files
 COPY api.py .
 COPY requirements.txt .
-COPY cache.json .   # optional
-COPY cookies.txt .  # optional
 
-# Install Python deps
-RUN pip install -r requirements.txt
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Expose port
+# Expose port for Koyeb
 EXPOSE 8080
 
-# Run FastAPI
+# Run FastAPI server
 CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8080"]
